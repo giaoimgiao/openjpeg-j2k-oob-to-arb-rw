@@ -5,7 +5,9 @@
 
 ## 0. 这是什么（先说准确）
 
-- **漏洞本体是已知的、公开跟踪的**：openjpeg 的 J2K 越界写
+**从ComfyUI 为入口，确认它依赖 Pillow，而 Pillow 又捆绑了有漏洞的 OpenJPEG**
+
+- **OpenJPEG漏洞本体是已知的、公开跟踪的**：openjpeg 的 J2K 越界写
   （`read_sod()` 中 `tp_index[current_tpsno]` 越界；对应 OSV-2025-219 / openjpeg PR#9520 一类）。
   **本仓库不主张任何 0-day。**
 - **本仓库新增的是「利用技术」**：公开资料里这一处基本止于崩溃型 PoC，
