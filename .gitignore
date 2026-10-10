@@ -1,0 +1,8 @@
+# 复现时生成的中间文件（勿提交）
+repro/stage1.j2k
+repro/stage2.j2k
+
+# 通用
+__pycache__/
+*.pyc
+*.log
