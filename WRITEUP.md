@@ -187,3 +187,14 @@ bash repro/repro.sh
   给厂商留出修复窗口。
 - 本文为**本地** PoC；未授权对第三方系统使用属违法行为。
 - "首个"类表述应以公开可检索的先例核实为准，本文不作此声明。
+
+---
+
+## 10. 相关仓库（姊妹项目）
+
+- **本仓库**：负责**通用原语** —— 类型混淆成 memoryview ⇒ **任意读写 + 信息泄露（ASLR 归零）**。
+- **姊妹仓库** [`comfyui-openjpeg-rce`](https://github.com/giaoimgiao/comfyui-openjpeg-rce)：
+  同一个漏洞、同一个写入原语的**另一条执行链** —— 图片把元组的元素指针改写为攻击者缓冲区，
+  缓冲区里放**假 `PyTypeObject`**（`tp_repr = system@plt`）⇒ `repr(元素)` 即执行；
+  **不需要 memoryview 元数据、只需一次解码**（本仓库路线需要两次解码）。
+- **两者差异对照与组合方式**见 [`RELATION.md`](https://github.com/giaoimgiao/openjpeg-j2k-oob-to-arb-rw/blob/main/RELATION.md)。
