@@ -24,6 +24,14 @@
 
 ## 1. 背景：为什么要打"依赖的依赖"
 
+> **本文定位（原语篇）**：本文记录的是**原语**这一层 —— 如何用一张 J2K 图片把这个漏洞
+> 变成"**任意内存读写 + 信息泄露（ASLR 归零）**"。
+> 从同一原语走到"**一条命令执行**"的**最短路线**（一次解码、不需要 memoryview 元数据），
+> 见姊妹仓库 [`comfyui-openjpeg-rce`](https://github.com/giaoimgiao/comfyui-openjpeg-rce)；
+> 两条链的差异与组合方式见 [`RELATION.md`](https://github.com/giaoimgiao/openjpeg-j2k-oob-to-arb-rw/blob/main/RELATION.md)。
+> 下文出现的 **ComfyUI** 指的是"受影响目标"的举例（ComfyUI → Pillow → 内嵌 openjpeg），
+> 不代表本文只适用于 ComfyUI。
+
 ```
 ComfyUI  ──依赖──▶  Pillow 12.3.0  ──vendored──▶  openjpeg 2.5.4
    (最新已修)             (最新已修)                 (补丁未跟进 ← 打这里)
