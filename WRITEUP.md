@@ -22,26 +22,25 @@
 
 ---
 
-## 1. 背景：为什么要打"依赖的依赖"
-
-> **本文定位（原语篇）**：本文记录的是**原语**这一层 —— 如何用一张 J2K 图片把这个漏洞
-> 变成"**任意内存读写 + 信息泄露（ASLR 归零）**"。
-> 从同一原语走到"**一条命令执行**"的**最短路线**（一次解码、不需要 memoryview 元数据），
-> 见姊妹仓库 [`comfyui-openjpeg-rce`](https://github.com/giaoimgiao/comfyui-openjpeg-rce)；
-> 两条链的差异与组合方式见 [`RELATION.md`](https://github.com/giaoimgiao/openjpeg-j2k-oob-to-arb-rw/blob/main/RELATION.md)。
-> 下文出现的 **ComfyUI** 指的是"受影响目标"的举例（ComfyUI → Pillow → 内嵌 openjpeg），
-> 不代表本文只适用于 ComfyUI。
+## 1. 背景：这是 Python 生态的"下沉依赖"问题
 
 ```
-ComfyUI  ──依赖──▶  Pillow 12.3.0  ──vendored──▶  openjpeg 2.5.4
-   (最新已修)             (最新已修)                 (补丁未跟进 ← 打这里)
+Python 应用（Web 后端 / 批处理 / AI 工作流 / 爬虫 / 数据管道 …）
+  └─ 依赖 Pillow（Python 图像处理的事实标准库）
+        └─ Pillow 把 openjpeg 源码 vendored 进自己的 wheel
+               └─ openjpeg 2.5.4（漏洞在这里；上游修复未跟进到 Pillow 的构建）
 ```
-ComfyUI / Pillow 主版本的最新漏洞都已修复，但 **Pillow 把 openjpeg 源码 vendored 进
-自己的 wheel**（`pillow.libs/libopenjp2-*.so`），上游 openjpeg 的修复并不自动进入
-Pillow 的构建。于是这一类"**框架依赖级**"漏洞具备**通杀性**：
-只要目标用这份 Pillow 版本，同一份文件即可命中。
 
----
+- **Pillow 是 Python 的"入口级"依赖**：只要程序需要处理图片（用户上传、缩略图、格式转换、
+  数据集预处理……）就会引入它。因此受影响面是 **"任何用 Pillow 解码 J2K 的 Python 应用"**，
+  与具体框架无关。
+- **为什么要打"依赖的依赖"**：Pillow 主版本自身可能已经修补，但它把 openjpeg 源码**打包进 wheel**
+  （`pillow.libs/libopenjp2-*.so`）—— 上游 openjpeg 的修复**不会自动进入** Pillow 的构建。
+  于是形成"**框架看起来是新的、里面的解码器还是旧的**"这一空档。
+- 这类 vendored 依赖缺陷具有**通杀性**：同一份文件，对任何使用该 Pillow 版本的 Python 部署都可能命中。
+- 本文只讨论**漏洞与利用原语**；把原语变成"一条命令执行"的最短路线见姊妹仓库
+  [`comfyui-openjpeg-rce`](https://github.com/giaoimgiao/comfyui-openjpeg-rce)（执行篇），
+  两条链的差异与组合方式见 [`RELATION.md`](https://github.com/giaoimgiao/openjpeg-j2k-oob-to-arb-rw/blob/main/RELATION.md)。
 
 ## 2. 漏洞根因（源码级）
 
