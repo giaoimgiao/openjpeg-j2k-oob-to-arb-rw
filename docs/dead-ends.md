@@ -173,6 +173,39 @@ tiles = 0xe79150 = tp_index + 0x230      ← 越界写就落在它上面
 找出"指针语义字段落在可达区间"的那一个。找到就继续，找不到就把仓库口径固定在：
 **本地任意读写 + 任意 free 已实证；远程 = DoS 稳定；远程 RCE 未达成。**
 
+### 4.1 实测结果：本节也已封闭
+
+按上面的方法点名完毕（`win.py`，数据源 `v1l.log`）：
+
+```
+可达窗口 [0xe79150, 0xe7a710] = [tp_index+0x230, tp_index+0x17e8]
+  0xe79150  calloc(1, 856)  ← tiles（opj_tcd_tile_t），窗口内【唯一】对象
+  其后至窗口末尾：heap top（未分配，写了就破坏 top size）
+```
+
+- `tiles` 里唯一的指针槽是 `+0x18 comps`；写它是**类型混淆**（被当 `opj_tcd_tilecomp_t*` 解引用），
+  不是"调用"，不满足判据 2 ⇒ 不构成劫持点。
+- 唯一指针语义之外的字段（`x0/y0/x1/y1`、`numcomps`、`numpix`）全是长度/计数 ⇒ 前面 §2.1 已证死。
+
+另试过"换窗口"这一自由度（`nb_tps` 决定 `tp_index` 落点）：
+
+```
+TLM 条目 = 1,2,5,6,7,8,10,12,14  ⇒ nb_tps 恒为 0 ⇒ 不越界，[*] load ok
+TLM 条目 ≈ 29                    ⇒ nb_tps = 23 ⇒ tp_index = 0xe78f20（大地址）
+```
+
+⇒ **不存在"小 nb_tps 让 tp_index 落到低地址、从而覆盖 codec/stream/tcd"的配置**：
+`nb_tps` 只有在条目足够多时才非零，而此时 `tp_index` 必然在大地址。
+
+### 4.2 根因（一句话）
+
+越界写是**单调向高地址**的；而所有含函数指针的对象（`opj_stream_private` 的
+`m_read_fn/skip_fn`、`opj_codec_private` 的 `m_event_mgr`、`opj_j2k_t` 的
+`m_procedure_list`）都是**在 `tp_index` 之前**分配的（低地址）。
+`tp_index` 分配点在 `read_sod()`（解码阶段，最晚），其后只会跟 `tiles` 和 top chunk。
+
+**这是顺序约束，不是数值约束。** 换文件、换 PAD、换几何都改不动它。
+
 ---
 
 ## 5. 方法论沉淀（可泛化，比单条漏洞更值钱）
