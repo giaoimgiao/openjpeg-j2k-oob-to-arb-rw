@@ -1166,3 +1166,37 @@ mct.c:430       for (j < pNbComp) for (k < pNbComp) lCurrentResult[j] += *(lMct+
 1. 解码不崩（读越界在映射页内）；
 2. 输出像素中出现**非图像内容**且跨运行变化的值（堆特征）；
 3. 缩短/加长矩阵时，这些值跟着移动 —— 证明读到了矩阵之外。
+
+### 5.4 MCT 读越界也是死路（编码器专用，decoder 不可达）
+
+上一节把 `opj_mct_decode_custom`（`mct.c:403`）当成 leak 候选，理由是它不校验
+矩阵长度。但实测源码后确认：**这个函数在解码路径上不会被调用**。
+
+```
+j2k.c:8322   tcp->mct = 2;      ← 在 opj_j2k_setup_encoder 内（parameters->mct_data）
+j2k.c:8382   tcp->mct = 0;
+全文件再无第三处把 mct 置 2
+read_mcc（j2k.c:6330-6420）只填 m_mct_records / m_decorrelation_array，【不设 mct】
+⇒ 解码时 mct 只能来自 COD 的 SGcod（0 或 1）
+⇒ tcd.c:2192 / tcd.c:2524 的 `if (mct == 2)` 在 decoder 侧恒不成立
+⇒ opj_mct_decode_custom 是编码器专用函数，上传文件永远到不了
+```
+
+**普查判据升级（这条是新增的硬过滤）**：
+
+```
+候选必须同时满足三条：
+  ① 分配口径 ≠ 使用口径
+  ② 值/长度来自文件字段
+  ③ 【必须在 decoder 可达路径上】
+     从 opj_read_header / opj_read_tile_header / opj_decode_tile_data
+     出发能到达；编码器专用、死代码、
+     或依赖 parameters-> 的路径一律排除
+```
+
+`tools/census.py` 的第一版没有第 ③ 条，这是它最大的盲区：
+静态看起来“两处数量不同源”的函数里，有相当一部分是编码器专用
+（`opj_j2k_setup_encoder` 可达、`opj_read_*` 不可达）。
+
+另外本条也顺带解释了 §5.1 的 PPM 为什么是假阳性：它是真 decoder 路径，
+但两个数量同源（分配与拷贝都按 Nppm），①不成立。
