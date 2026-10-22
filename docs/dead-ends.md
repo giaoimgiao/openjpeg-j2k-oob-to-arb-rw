@@ -811,3 +811,37 @@ q[+221] @0xd83478 = 0xb21ed0      ← comps0+0x08 = x1|y1 被写中
 
 **下一发判据**：`OFF74 = 0xb21ed0 - 0x4e`，让 `resolutions == 0xb21ed0`；
 然后看 `0xb21ed0` 处出现 `tcd_init_tile` 写入的 resolution 字段（`x0/y0/x1/y1/pw/ph`）。
+
+### 4.16 命中 resolutions 后的真实阻塞点：同一批写先破坏了 comps 的字段
+
+`k4.j2k`（OFF74 校准后）实测：
+
+```
+行10500  tpsno=74  val=0xb21ed0 → comps0+0x20 = resolutions   ✅ 写中
+行10509  [DBG MAP] tile=0xd83110 comps=0xc5c                    ← init_tile 在之后跑，但 comps 已坏
+行崩溃   opj_realloc(bytes=11672019) in _int_malloc
+```
+
+即：`resolutions` 确实被改指到静态地址，但 `init_tile` 拿到的 `tiles->comps`
+已经是垃圾（`0xc5c`），还没走到用 `resolutions` 就崩了。
+
+几何关系（实测）：
+
+```
+tp_index = 0xd82d90
+tiles    = 0xd83110   delta=0x380  (/24 = 37.33)
+tiles+0x18(comps*) = 0xd83128  (/24 = 38.33)
+```
+
+⇒ `tiles->comps` **不在 24 的整数步长上**（余数 8），所以它不是被步长写直接打坏的；
+`comps0=0xc5c` 来自 `tpsno=73` 系列写（`end_header`→`comps0+0x00`、`end_pos`→`comps0+0x08`）
+把 `opj_tcd_tilecomp_t` 的 `x0/y0/x1/y1` 覆盖之后，后续读取链拿到的垃圾值。
+
+**结论（可操作）**：要让 `resolutions` 生效，必须让命中它的那次写是【第一次越界写】，
+即 `nb_tps = 74`（0..73 合法，74 首次越界），此时 `comps+0x00/+0x08` 保持原值。
+代价：`tp_index` 变成 74×24=1776B（chunk 0x700），塑形图 A 也必须是同 size class。
+
+**下一发判据**：
+1. `nb_tps=74`，`tp_index` chunk = 0x700（日志中 `calloc n=74 s=24`）；
+2. `tpsno=74` 的 `end_pos` 落在 `comps0+0x20` 且 `val=0xb21ed0`；
+3. `tcd_init_tile` 之后 `0xb21ed0` 起始处出现 resolution 字段（`x0/y0/x1/y1` = 0/0/16/16）。
