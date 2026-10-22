@@ -206,6 +206,48 @@ TLM 条目 ≈ 29                    ⇒ nb_tps = 23 ⇒ tp_index = 0xe78f20（�
 
 **这是顺序约束，不是数值约束。** 换文件、换 PAD、换几何都改不动它。
 
+### 4.3 重要修正：上述结论**只对 Pillow 宿主成立**
+
+上面这段写于只验证过 Pillow 的阶段。换成真宿主 `opj_decompress` 后结论被推翻：
+
+```
+环境：系统 libopenjp2 2.5.0（Ubuntu 2.5.0-2ubuntu0.5）
+  opj_decompress p.jp2            → rc=0, 正常解码
+  ⇒ Ubuntu 已回补，系统库无洞；ImageMagick / GDAL / opj_* CLI 走系统库，装了也没用
+
+环境：同一个 opj_decompress 二进制 + LD_LIBRARY_PATH=/tmp（我们的 2.5.4 带符号）
+  opj_decompress p.jp2            → rc=134 Aborted
+  tp_index = 0x300003d060（6 项 = 144B）
+  0x300003d100 = tp_index + 0xa0 → malloc(320) = 4 × sizeof(opj_tcd_cblk_dec_t)
+  [FREE] 0x300003d100 chunksize=0x20be3   ← 0x20be3 就是我们的文件偏移值
+  munmap_chunk(): invalid pointer
+  ⇒ 越界写直接命中 cblks.blocks 的 chunk 头，窗口内不再是 tiles
+```
+
+`opj_tcd_cblk_dec_t`（`tcd.h`）含 `segs*` / `chunks*` **两个指针字段**，
+且 `cblks.blocks` 由 `opj_malloc` 分配（`tcd.c:1171`，不清零，保留旧字节）。
+
+**所以“`tp_index` 后面只有 tiles”是 Pillow 分配序列的产物，不是这个 bug 的性质。**
+但同一发也暴露了更硬的限制：`0x300003d060 ≈ 200GB`，而文件只有 134KB ⇒ 值域不可表达，
+真宿主这条依然封。
+
+### 4.4 仍未封的唯一方向：跨请求堆塑形
+
+`d2.log` 已给出证据：同一份代码、只因为之前解码过别的文件，
+`l_tcp` 相对 `tp_index` 从“上方”变成“下方”：
+
+```
+t2.log:  tp_index(tile0) = 0xe78f20   l_tcp = 0xe6fb10   ← tcp 在下（不可达）
+d2.log:  tp_index(tile0) = 0xe58410   l_tcp = 0xe77780   ← tcp 在上（可达）
+```
+
+`opj_tcp_t` 含 `m_data`（码流基址）与 `m_data_size` ⇒ 指针语义。
+Pillow 宿主下 `tp_index ≈ 0xe78f20`，值域可表达（15MB 文件），
+唯一缺的是“让 `tp_index` 落进低地址空洞、上方正好是 `l_tcp`”这一堆状态。
+
+**判据**：同一进程 → 先解码塑形文件 A（制造空洞）→ 再解码攻击文件 B
+→ 日志出现 `tp_index` 落在 A 留下的空洞里，且 `[DBG TCP] l_tcp` 数值大于 `tp_index`。
+
 ---
 
 ## 5. 方法论沉淀（可泛化，比单条漏洞更值钱）
