@@ -363,3 +363,27 @@ Xsiz/Ysiz=0xffffffff                                  Header 校验拒绝
 ⇒ 尺寸/采样这条轴在 **release 2.5.4 + guard** 下没有“分配≠写入跨度”。
 下一批该打 COD（cblkw/cblkh/numres/precinct）与多 tile 组合，
 因为那是 openjpeg 里唯一还在用 UINT32 算缓冲尺寸的地方。
+
+### 4.9 跨请求堆塑形：确认可控，但方向与值域相反（实测）
+
+同一进程内先解码 A、再解码 B（Pillow 12.3.0 + 2.5.4 插桩），B 的 `tp_index` 落点：
+
+```
+单跑 B (w6.j2k, 15183384 B)          tp_index = 0xe78f20
+A PAD=0x100000 (1.0 MB)  -> B         tp_index = 0xf7f5d0   (A 段 Aborted)
+A PAD=0x400000 (4.2 MB)  -> B         tp_index = 0xe7e230
+A PAD=0x800000 (8.4 MB)  -> B         tp_index = 0xe7e230
+A PAD=0xb00000 (11.5 MB) -> B         tp_index = 0xe7e1a0
+```
+
+结论：
+
+1. **堆历史确实能移动 `tp_index`**（0xe78f20 → 0xe7e1a0/0xe7e230/0xf7f5d0），
+   这是“远程常驻进程连续请求”与“本地单次”的实质差别 ⇒ §4.4 的方向成立。
+2. **但已测的每一种 A 都把它往高地址推**，而原语的值必须 ≤ 文件长度：
+   `0xe7e1a0 = 15197600 > 15183384` ⇒ 一旦被推高就越过值域，反而不可利用。
+3. 要让落点变低，A 必须**分配并释放一个与 `tp_index` 同尺寸类（552B→0x240 bin）的块**，
+   让 B 的 `calloc(23,24)` 命中它（tcache 复用），此时 `tp_index` 地址 = A 那块地址（低）。
+
+**下一步唯一判据（一句话）**：`B.tp_index == A.tp_index`。
+达成即意味着“落点可被第一张图钉死在选定地址”，值域问题随之消失（因为可以选择低地址）。
