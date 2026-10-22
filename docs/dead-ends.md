@@ -578,3 +578,34 @@ tpsno 到 76 ✓，【*】load ok ✓（解码全程完成）
 所以「index 74 → comps+0x20 → resolutions=静态 .data」这条要成立，
 必须与塑形同时满足，而且塑形后 part 数不能变（否则布局又翻回去）。
 下一步判据：塑形后仍满足 `delta>0` 且 `(delta+0x20-0x10)/24 == 目标 index`。
+
+### 4.13 【反转】越界写落在的是 free chunk，不是活对象
+
+`tools/ts.py`（时序判别器）修正基准（取“最后一次 decode 之后的首个 read_sod”）后的结果：
+
+```
+B 段首个 read_sod = 行 395
+0xd1a810  行258  80B  before=YES  FREED BEFORE
+0xd1a7f0  行376  24B  before=YES  FREED BEFORE
+```
+
+⇒ 窗口内那些对象确实早于写入时刻存在，但**都已经被 free**。
+它们不是活对象，而是 A23 塑形时分配、随后释放的空闲块。
+
+意义完全变了：
+
+| 旧认知 | 实际 |
+|---|---|
+| 写“活对象字段” ⇒ 需要对象还在 | 写的是 **free chunk 的 fd / key / next** |
+| 需要知道堆地址才能指 | 值只要能被文件偏移表达即可（小整数） |
+| 会被 `memset(blocks,0,size)` 抹掉 | free chunk 内容会被**下一次 malloc 直接消费** |
+
+⇒ 这条原语的真正形状是 **空闲链污染（tcache / unsorted poisoning）**，
+而不是“字段级写”。它不需要地址，也不受 memset 干扰。
+
+**两个已知道的阻碍**（必须在下一发一起看）：
+1. glibc 2.35 的 tcache 有 `e->key == tcache` 检测（写坏 key ⇒ 可能 abort）；
+2. `w6.log:629/644` 的双 free 结构性仍在（同一块被 free 两次）。
+
+**下一发判据（一行）**：B 段解码过程中出现 `ALLOC ... -> 0x<小值>`
+（malloc 返回了我们写入的偏移值当作地址）⇒ 空闲链被接管。
