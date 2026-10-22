@@ -323,3 +323,43 @@ tcd.c:1369  for (i < l_current_max_segs) opj_tcd_reinit_segment(&l_segs[i]); // 
 两者从来没有同时成立过。这就是为什么每一轮都“差一点”。
 **下一步唯一值得做的：找一处能把堆地址送回攻击者的读原语（leak）。**
 有了 leak，4.5 这条立刻从“封”变成“可用”——因为它只缺一个地址。
+
+### 4.7 发现器：分配/写入口径不一致探测器（已可用）
+
+```
+tools/guard_alloc.c   LD_PRELOAD 分配器：每个 >=THRESH 的块按页 mmap，尾部贴 PROT_NONE
+                       覆盖 malloc/calloc/realloc + memalign/aligned_alloc/posix_memalign
+用法  gcc -shared -fPIC -O2 -o guard.so guard_alloc.c -ldl
+      LD_LIBRARY_PATH=<clean 2.5.4> LD_PRELOAD=./guard.so GUARD_THRESH=64 opj_decompress -i X.j2k
+```
+
+**关键**：openjpeg 的大缓冲走 `opj_aligned_malloc`（t1->data / tilec->data / decoded_data），
+只 hook `malloc` 的版本对它们完全无保护 —— 第一版 guard 就踩了这个盲区，
+必须同时 hook `posix_memalign/aligned_alloc/memalign` 才覆盖到最该越界的地方。
+
+验收（同一 PoC，同一 release 构建）：
+
+```
+系统库 2.5.0（已回补）        rc=0
+干净 2.5.4 + guard          rc=139
+base.j2k / w8.j2k + guard   rc=0（无误报）
+```
+
+**边界**：guard 按页分配会彻底改掉堆布局，因此它只能做“越界判定”，
+不能用来测地址、不能把它的地址写进利用链。
+
+### 4.8 SIZ/几何定点变异：静默
+
+对干净基线 w8（nb_tps=0，不触发已知洞）做单字段变异，`tools/mut_siz.py`：
+
+```
+XTsiz=1 / YTsiz=1 / XTsiz=0xffff / YTsiz=0xffff      rc=0/1（无崩溃）
+Xsiz=0x7fff / Ysiz=0x7fff / Xsiz=0x10000             rc=0
+XRsiz=2 / YRsiz=2                                    rc=0
+XOsiz=0x80                                           Header 校验拒绝
+Xsiz/Ysiz=0xffffffff                                  Header 校验拒绝
+```
+
+⇒ 尺寸/采样这条轴在 **release 2.5.4 + guard** 下没有“分配≠写入跨度”。
+下一批该打 COD（cblkw/cblkh/numres/precinct）与多 tile 组合，
+因为那是 openjpeg 里唯一还在用 UINT32 算缓冲尺寸的地方。
