@@ -387,3 +387,38 @@ A PAD=0xb00000 (11.5 MB) -> B         tp_index = 0xe7e1a0
 
 **下一步唯一判据（一句话）**：`B.tp_index == A.tp_index`。
 达成即意味着“落点可被第一张图钉死在选定地址”，值域问题随之消失（因为可以选择低地址）。
+
+### 4.10 【结构变化】塑形后 comps 进入可达窗口（新原语）
+
+实测（`a23.log`，A=7.6KB 的 TLM-23 声明图，B=w6.j2k）：
+
+```
+B 段:  tp_index = 0xd82d90
+      comps0   = 0xd83470 = tp_index + 0x6e0     ← 112B 的 opj_tcd_tilecomp_t 数组
+      delta_data = 1808  (= 0x710)
+```
+
+意义：此前所有构造都假设“`tiles->comps` 在 `tp_index` 之上很远，必须用指针指过去”。
+塑形之后它自己进了可达窗口（越界写步长 24B，`TPsot` 单字节可到 255）。
+
+落点换算（`tpsno = (目标 - tp_index) / 24`）：
+
+```
+tpsno=73  → comps0 - 0x08   (x1|y1)
+tpsno=74  → comps0 + 0x10   (compno | numresolutions)
+tpsno=75  → comps0 + 0x28   (resolutions_size)
+tpsno=76  → comps0 + 0x40   (data_size_needed)
+tpsno=77  → comps0 + 0x58   (win_x0 | win_y0)
+tpsno=78  → comps1 + 0x00   (下一个 tilecomp 的 x0|y0)
+```
+
+**这是“不需要知道地址的字段级写”**：落点由 tpsno 决定（相对 tp_index），
+值仍受“= 文件偏移”限制，但这里所有目标字段都是 32 位计数/坐标，小值即可。
+
+未验证（下一发才知道）：
+- `tpsno` 能否真的超过 `nb_tps-1`（越界写发生在后续 tile-part 的 read_sod，
+  需要 file 里真的有 ≥74 个 SOT，而 TPsot 单字节上限 255）；
+- 命中 +0x10 时 `numresolutions` 会被写成 0（高 32 位），是否在 DWT 前就被使用。
+
+判据（一句话）：`disc.py` 读出的 comps[0] 字段出现我们写入的 tell 值，
+且不等 0（说明命中 +0x10 而不是 +0x08）。
