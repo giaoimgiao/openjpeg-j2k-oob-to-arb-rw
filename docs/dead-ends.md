@@ -540,3 +540,41 @@ tpsno 到 76 ✓，【*】load ok ✓（解码全程完成）
 所以「index 74 → comps+0x20 → resolutions=静态 .data」这条要成立，
 必须与塑形同时满足，而且塑形后 part 数不能变（否则布局又翻回去）。
 下一步判据：塑形后仍满足 `delta>0` 且 `(delta+0x20-0x10)/24 == 目标 index`。
+
+### 4.12 per-part 长度构造器 + 两个坑（实测）
+
+`tools/mk_pp.py <模板> <out> <N> <OFF_K1> <OFF_K2>`：
+N 个连续 TPsot 的 tile-part，并可把第 74/76 个 SOT 顶到指定文件偏移
+（偏移即写入值 ⇒ 可指定「写到哪个下标、写成什么」）。
+
+**坑 1：TLM 的 L 字段 = 4 + 3n，不是 2 + 3n**
+
+```
+写成 2+3n ⇒ 解析器提前 2 字节找下一个标记 ⇒ "Marker length too small" / 结构全乱
+正确：L = 4 + 3n（含 Ztlm/Stlm 两字节）
+```
+
+**坑 2：手工改 TLM 长度会让所有 Psot 失效**（必须由构造器一次生成）。
+
+实测（`pp0.j2k`，10 part）：
+
+```
+nb_tps=1（每 tile 一条 TLM）⇒ 索引路径开启
+tpsno=0,1,... 递增；越界写发生（corrupted size vs. prev_size）
+```
+
+实测（`pp1.j2k`，77 part，15.18MB）：
+
+```
+tpsno 到 76 ✓，【*】load ok ✓（解码全程完成）
+清理阶段 corrupted double-linked list
+但：tp=0xe4f590  comps0=0xdf39d0  ⇒ comps 在 tp 下方，向上写够不到
+0xb21ed0 内容完好（仍是 Python 静态对象）⇒ 未被写
+```
+
+⇒ **结论：单次解码下 `tiles->comps` 落在 tp_index 下方（112B 块多来自 128 tcache bin，地址低）；
+只有「A 先塑形、再解 B」时它才跑到上方（a23 的 delta=+0x6e0）。**
+
+所以「index 74 → comps+0x20 → resolutions=静态 .data」这条要成立，
+必须与塑形同时满足，而且塑形后 part 数不能变（否则布局又翻回去）。
+下一步判据：塑形后仍满足 `delta>0` 且 `(delta+0x20-0x10)/24 == 目标 index`。
