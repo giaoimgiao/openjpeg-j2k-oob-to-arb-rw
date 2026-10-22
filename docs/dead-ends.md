@@ -286,3 +286,40 @@ Pillow 宿主下 `tp_index ≈ 0xe78f20`，值域可表达（15MB 文件），
 | `disc.py` | 从日志重建 `opj_tcd_tile_t` 字段视图 |
 | `mkparse.py` | 文件级标记序列对比（证明构造器无问题） |
 | `cdis3.c` / `cdis4.c` | 纯 openjpeg 判别器（证明"卡死"是 Pillow 侧特有） |
+
+### 4.5 PHP 同构分支：形状在，燃料被擦掉（已封）
+
+`tcd.c:1356-1370`（`opj_tcd_code_block_dec_allocate` 的 else 分支）与 CVE-2026-109618 的
+`cleanup { efree(part->data) }` 是同一形状：**消费复用内存里的旧字节**。
+
+```
+tcd.c:1358  l_segs            = p_code_block->segs;              // 旧字节当指针
+tcd.c:1359  l_current_max_segs= p_code_block->m_current_max_segs; // 旧字节当长度
+tcd.c:1364  opj_aligned_free(p_code_block->decoded_data);          // free(旧字节)
+tcd.c:1369  for (i < l_current_max_segs) opj_tcd_reinit_segment(&l_segs[i]); // 按旧长度写0
+```
+
+实测为什么不可用（三点，全部可复核）：
+
+```
+① 销毁路径擦干净：tcd.c:2361 dec_deallocate → segs=00 / chunks=00 / decoded_data=NULL
+② ghost2.py 判别器：d3.log 132 alloc / 214 free，free-without-alloc = 0
+   （首轮 3 个“幽灵 free”是 realloc 第二形态未解析导致的误报，修正后归零）
+③ 320B 块的唯一来源就是 cblks.dec（两个调用点相差 0x84，同一函数的 if/else）
+   ⇒ 没有“别的结构留下的 320B 残块”可以被复用
+```
+
+**结论**：这个分支需要一个“库里自己留下、且仍有效的指针”。openjpeg 在 deallocate 时
+把它擦成 NULL，所以没有燃料。要用它，必须先有一次信息泄漏（用来填 `decoded_data`），
+否则就是把一个未知值塞进 `free()`。
+
+### 4.6 目前所有“写”原语的共同形状（一句话）
+
+```
+值域自由（文件字节） → 但没有地址
+有地址（tp_index 邻域） → 但值只能是文件偏移
+```
+
+两者从来没有同时成立过。这就是为什么每一轮都“差一点”。
+**下一步唯一值得做的：找一处能把堆地址送回攻击者的读原语（leak）。**
+有了 leak，4.5 这条立刻从“封”变成“可用”——因为它只缺一个地址。
