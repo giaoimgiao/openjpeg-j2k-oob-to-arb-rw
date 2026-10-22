@@ -20,7 +20,13 @@ orig_tlm_end = orig_tlm + 2 + struct.unpack('>H', d[orig_tlm + 2:orig_tlm + 4])[
 first_sot = d.find(b'\xff\x90', soc)
 
 ntiles = 4
-ents = b''.join(bytes([t]) + struct.pack('>H', 1) for t in range(ntiles))
+# nb_tps = 该 tile 在 TLM 中【出现的条目数】，不是 length 字段的值
+# ⇒ 要让 nb_tps=23，tile0 必须在 TLM 里出现 23 个条目
+parts_per_tile = [23, 1, 1, 1]
+ents = b''
+for t in range(ntiles):
+    for _ in range(parts_per_tile[t]):
+        ents += bytes([t]) + struct.pack('>H', 1)
 TLM = b'\xff\x55' + struct.pack('>H', 4 + len(ents)) + bytes([0, 0x10]) + ents
 mid = d[orig_tlm_end:first_sot]
 head = siz_end + len(TLM) + len(mid)
