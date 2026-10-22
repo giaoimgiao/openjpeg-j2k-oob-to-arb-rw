@@ -953,3 +953,50 @@ tiles+0x18(comps*) = 0xd83128  (/24 = 38.33)
 所以要找的是：**让前几次越界写在窗口内落到一个不会被后续使用的空洞区**。
 这只剩一个可测判据：窗口内 `[tp, tp+0x17E8]` 的哪些 24B 槽在写出后到 init_tile 之前
 不会被读取。用 `disc.py` + 时间线可以逐槽判定，不需要新构造器。
+
+### 4.18 【一般性证明】几何高度恒为 0，与 delta / 塑形 / mod24 无关
+
+所有“写像素”尝试（tilec->data、resolutions、data_win）最终都停在同一个地方。
+现在把它证明出来，一次关掉整类方向：
+
+```
+越界写一次写 8 字节，落点只有两个：
+tp_index + 24k + 8   和   tp_index + 24k + 16
+写入值 = tell = 文件内偏移 < 4GB  ⇒ 【高 32 位恒为 0】
+
+opj_tcd_tilecomp_t:
+  +0x00 x0 | y0      ← 命中时 y0 = 0（高 32 位）
+  +0x08 x1 | y1      ← 命中时 y1 = 0（高 32 位）
+
+⇒ res_h = y1 - y0 ≡ 0
+⇒ data_size_needed = res_w * res_h * 4 = 0
+⇒ opj_alloc_tile_component_data 走“保留 data”分支，但 T1 没有像素可写
+```
+
+这条与 `delta`、`mod24`、`nb_tps`、塑形 A 的形状**全都无关**，
+因此：
+
+| 曾被寄望的方向 | 死因 |
+|---|---|
+| `comps->data = strlen@GOT` + 像素写 | res_h=0 ⇒ 不写 |
+| `resolutions` 指向静态 .data | 同上，且 resolutions 的 y1 也在 +0x0c |
+| 用 `win_*` 扩大窗口 | 窗口不改变 res_h |
+| 拓扑（多 tile / 多 comp） | 只改 delta，不改 y1=0 |
+
+**唯一例外**：`tell ≥ 4GB`，即上传文件 ≥4GB。这在上传场景不可行，
+但它是“值域”限制而非实现难度，记录在此以免以后再试。
+
+### 4.19 由此收敛出的唯一未封方向：写【计数/长度】而非坐标
+
+`tilecomp` 里唯一能改变“高度”的字段是 `y1`（不可达）。
+但库内还有一类字段，被当作**循环上界或分配尺寸**使用，且取的是**低 32 位**：
+
+```
+cblk_dec:  numsegs / real_num_segs / m_current_max_segs / numchunks / numchunksalloc
+tp_index 数组本身无此字段；tiles->numcomps(+0x10) 是
+```
+
+这些字段若被写成小整数，可让库自己算出越界的下标或尺寸，
+而【值来自文件偏移】正好是它们需要的语义（小整数）。
+判据：写后出现 `[ALLOC] size=<远小于随后写入量>` 或
+`for (i < 我们写的数)` 导致的越界访问。
