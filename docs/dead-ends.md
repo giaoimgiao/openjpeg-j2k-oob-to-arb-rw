@@ -1200,3 +1200,45 @@ read_mcc（j2k.c:6330-6420）只填 m_mct_records / m_decorrelation_array，【�
 
 另外本条也顺带解释了 §5.1 的 PPM 为什么是假阳性：它是真 decoder 路径，
 但两个数量同源（分配与拷贝都按 Nppm），①不成立。
+
+### 5.5 判据③（decoder 可达）不能静态做：openjpeg 用函数指针表调度
+
+写了 `reach.py` 做静态可达分析（从 `opj_read_header` 等入口 BFS 调用图）：
+
+```
+functions parsed: 523
+decoder-reachable: 17
+encoder entries reachable? 全部 False（正确）
+  opj_j2k_read_sod            reachable=False   ← 错误：它明明在解码路径上
+  opj_tcd_code_block_dec_allocate reachable=False  ← 错误
+```
+
+根因：openjpeg 的解码流程是
+
+```
+opj_procedure_list_add_procedure(list, (opj_procedure)opj_j2k_read_sod, ...)
+opj_procedure_list_execute(list, ...)   →   (*proc)(...)
+```
+
+即**调用目标是函数指针**，静态调用图里不存在 `opj_j2k_read_sod(` 这样的直接调用，
+所以 BFS 抓不到。⇒ 判据③ 必须改成**运行时**判定。
+
+可行做法（不用改库）：
+
+```
+1) nm -D --defined-only libopenjp2.so | grep ' T opj_'   取全部导出函数
+2) 自动生成 LD_PRELOAD stub：每个函数 interpose 一次，打印函数名后
+   转发给真实符号（dlsym(RTLD_NEXT)）
+3) 用一个正常小 j2k 跑一次 → 得到【真实调用集合】= decoder 可达集
+4) 再对 census 候选按该集合过滤
+```
+
+**副产品**：这个 interpose 表同时能给出“每个函数的调用次数/顺序”，
+可以直接判定“某候选是否在攻击者可控的路径上”，比人工阅读可靠。
+
+判据③的形式化写法（可复用）：
+
+```
+候选可达  ⇔  存在一次【仅由文件内容驱动】的解码（正常文件即可）
+              使得 trace 中出现该函数
+```
