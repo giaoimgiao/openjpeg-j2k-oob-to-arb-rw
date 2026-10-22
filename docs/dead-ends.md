@@ -422,3 +422,43 @@ tpsno=78  → comps1 + 0x00   (下一个 tilecomp 的 x0|y0)
 
 判据（一句话）：`disc.py` 读出的 comps[0] 字段出现我们写入的 tell 值，
 且不等 0（说明命中 +0x10 而不是 +0x08）。
+
+### 4.11 【新构造】256 次可控写：TLM 覆盖全部 tile + nb_tps=1 + 多 part
+
+之前所有实验都只用 1~2 次越界写（`tpsno` 只比 `nb_tps` 大 1~2）。
+实际上写下标没有 255 以外的限制（`TPsot` 是单字节，最大 255），
+真正的门是 **`nb_tps` 必须 > 0，否则索引路径关闭、一次写都不发生**。
+
+构造规则（踩了两次坑才定下来）：
+
+```
+✗ TLM 只声明 1~2 条但不覆盖所有 tile  → TLM 被判无效 → nb_tps=0 → 零次写
+✗ 手工改 TLM 长度                        → 后面所有 Psot 偏移失效 → broken data stream
+✓ TLM 每个 tile 各 1 条（覆盖全部 tile）+ tile0 放 82 个 tile-part
+  ⇒ nb_tps=1，索引路径开启，tpsno 走到 82
+```
+
+实测（`mk_fake.py ... 99`，`99` = 每 tile 一条模式）：
+
+```
+[DBG read_sod] tile=0 tpsno=0 nb_tps=1 cur_nb_tps=1 tp_index=0xe53f50
+最大 tpsno = 82
+[FREE] 0xe81190 chunksize=0x12d0     ← 0x12d0 = 4816，正是我们的文件偏移值
+corrupted size vs. prev_size
+```
+
+意义：
+
+1. 写下标上限是 **255**（`TPsot` 单字节）⇒ 一次文件最多 **256 次写**，
+   窗口 = `[tp_index, tp_index + 255*24]` = `+0x17E8`。
+2. 每次写的值 = **该 part 自己的文件偏移**，而偏移由 PAD 自由摆放 ⇒
+   **256 个可选整数，落在连续 24B 步长的槽里**（每个值 ≤ 文件长度）。
+3. 这些值可以落到 **chunk 头**上（实测 `chunksize` 被改成 0x12d0），
+   也就是第一次拿到了“把选定小整数写进堆元数据”的能力。
+
+**这是目前唯一不需要地址、不需要大文件的写形态**：落点由相对下标决定，
+值由文件内容/长度决定，两者都不依赖 ASLR。
+
+下一步（判据）：让 256 次写同时命中「某块的 size 字段」与「相邻块的 prev_size」，
+拼出一个合法 fake chunk（size ≥0x20、16 对齐、PREV_INUSE 位正确），
+然后由库自己的 free 去消费它 —— 判据是 `[FREE]` 打印出我们拼的 size，而不是 `corrupted`。
