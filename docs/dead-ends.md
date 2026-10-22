@@ -1078,3 +1078,47 @@ tp_index 数组本身无此字段；tiles->numcomps(+0x10) 是
 `data` / `data_win` / `resolutions` / `data_size*` 四个槽调到
 “全部不需要分配、也不需要 free”的状态（判据：不再出现 free 崩溃，
 且 `0xa20f70` 出现在日志/被改写）。
+
+## 5. 换山：读侧 OOB（MCT 自定义矩阵长度未校验）
+
+### 5.1 PPM/PPT 已排除（实测）
+
+普查表里 `j2k.c:4055 ppm_buffer` 看似“分配按 Nppm 之和、循环按标记数”，
+实测两者同源：200 个 PPM 标记 → `malloc(200)`，无溢出（rc=0，guard 不报）。
+
+### 5.2 新候选：`opj_mct_decode_custom` 不校验矩阵长度
+
+```
+tcd.c:2190  if (l_tile->numcomps >= 3) {
+tcd.c:2191      if (l_tcp->mct == 2) {
+tcd.c:2213          opj_mct_decode_custom(l_tcp->m_mct_decoding_matrix,   // 文件提供的矩阵
+                                              l_samples, l_data,
+                                              l_tile->numcomps, sgnd);   // pNbComp = numcomps
+
+mct.c:403   OPJ_BOOL opj_mct_decode_custom(OPJ_BYTE *pDecodingData, OPJ_SIZE_T n,
+                                          OPJ_BYTE **pData, OPJ_UINT32 pNbComp, ...)
+mct.c:424       lMct = (OPJ_FLOAT32 *) pDecodingData;
+mct.c:430       for (j < pNbComp) for (k < pNbComp) lCurrentResult[j] += *(lMct++);
+```
+
+**没有任何地方检查 `m_mct_decoding_matrix` 的长度 >= `pNbComp*pNbComp*4`。**
+矩阵短 ⇒ 每像素读越界 `pNbComp²*4 - m_data_size` 字节，值来自堆，
+并直接写进解码系数 → 输出像素。
+
+这是与 `tp_index` 完全相反的一类：
+
+| 维度 | tp_index（写） | MCT custom（读） |
+|---|---|---|
+| 需要地址 | 是 | **否** |
+| 值来源 | 文件偏移 | **堆内存内容** |
+| 文件大小 | 14MB | 小文件 |
+| 跨版本 | 每版重标 | 结构恒定 |
+| 产出 | 6KB 窗口写 | **信息泄漏** |
+
+### 5.3 下一步（判据）
+
+构造：`numcomps=3` + COD 声明自定义 MCT + 一个长度不足的 MCT 矩阵（如 4 字节）。
+判据：
+1. 解码不崩（读越界在映射页内）；
+2. 输出像素中出现**非图像内容**且跨运行变化的值（堆特征）；
+3. 缩短/加长矩阵时，这些值跟着移动 —— 证明读到了矩阵之外。
