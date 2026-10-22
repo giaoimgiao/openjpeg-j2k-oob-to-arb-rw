@@ -116,3 +116,29 @@ glibc 三道门槛（全部已量清，不再是搜索）：
 当前剩余问题（唯一）：free 成功后进程崩 —— 因为清理阶段（tcd.c:2002）会再 free 一次被我们改写的 comps。
 下一步：让 comps 同时是一个「header 合法 + 块内 +0x50 为 0（free(NULL) 无害）」的块 ⇒ 用 calloc 清零块 0xe75420
 （data_win=*(0xe75470)=0 ⇒ free(NULL)；清理 free(0xe75420) ⇒ chunksize=0x441 合法）
+
+## 2026-10-22 依赖的依赖：首轮面探测（全部 0 崩）
+
+Pillow 12.3.0 实载版本树（用 PIL.features / _avif.codec_versions 读出）：
+
+    libavif 1.4.2  -> dav1d 1.5.3(dec) + aom 3.14.1(enc) + libyuv  （静态链在 libavif 内）
+    libtiff 4.7.1  -> zstd 1.5.7 / lzma 5.8.3 / webp 1.6.0 / jpeg(ABI 6.2)
+    libwebp 1.6.0  + libsharpyuv 0.1.2
+    freetype 2.14.3 / harfbuzz(so.0.61421) / zlib 1.3 / lcms2 2.16 / openjpeg 2.5.4
+
+探测方式：guard_alloc（LD_PRELOAD，块尾 PROT_NONE）挂在 Pillow 解码进程上，
+崩溃判据 = 被信号杀死（rc<0），Python 异常(rc=1) 不计。
+
+    基线：TIFF/AVIF 正常解码 rc=0（无误报）
+    TIFF 随机字节变异      320 发 -> 0
+    AVIF(libavif+dav1d)    120 发 -> 0
+    TIFF tag 级变异(70 组合，Width/Length/BPS/SamplesPerPixel/RowsPerStrip/
+        StripByteCounts/StripOffsets/PlanarConfig/...) -> 0
+    ICC(lcms2 经 ImageCmsProfile+applyTransform) 120 发 -> 0
+
+结论：这些面都被 OSS-Fuzz 磨过，随机/浅结构变异无产出。
+需要「语义级」构造：只在两个数量口径分离且无守卫处下手。
+
+已定位的可疑口径（待构造，未验证）：
+  1. libavif grid:  canvas(ispe) vs 每 tile 的 ispe  —— 合成时谁定 stride/边界
+  2. Pillow _webp.c:509  读 canvas_w*4*canvas_h 字节（读侧，若 libwebp 画布小于此则越界读）
