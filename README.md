@@ -3,6 +3,37 @@
 > **EN**: Escalating a *known* out-of-bounds write in openjpeg (vendored in Pillow)
 > into arbitrary memory read/write via data-oriented object grafting.
 
+## 研究范式（修订）：从「单点精密构造」转向「声明-使用差集」普查
+
+前 20 多轮的做法是“精密技巧”：24 字节步长对齐、`delta%24`、`nb_tps`、
+塑形、逐槽无害性。每一条都要为当前这台机器、这个 glibc、这个宿主单独校准一次 ——
+**调好也只能用一次**，这正是它不具备通用性的原因。
+
+改成普查后，研究的单位从“一个构造”变成“一个类别”：
+
+```
+文件声明的数量 N_decl   → 决定分配
+文件实际给出的数量 N_use → 决定写入下标 / 拷贝长度
+当 N_use > N_decl ⇒ 越界；若越界值来自文件字节，则【不需要地址、不受 ASLR 限制】
+```
+
+`read_sod` 的 `tp_index` 只是这一类里的一个实例（它的特殊之处是越界值 = 文件偏移，
+所以只能写小整数）。普查的目标是找**越界值 = 文件字节**的实例，那类天生通用。
+
+普查工具与判据：
+
+- `tools/census.py`：抽出「分配数量」与「循环上界」不同源的配对（含文件:行）。
+  第一版判据（标识符不同）噪声大，需叠加“两者均为独立解析的文件字段”。
+- `tools/guard_alloc.c`：`LD_PRELOAD` 分配器，块尾贴 `PROT_NONE` 页，
+  覆盖 `malloc/calloc/realloc` 与 `posix_memalign/aligned_alloc/memalign`。
+  **判据只有一条：崩溃点是否落在 `read_sod` 之外**（T1/DWT/apply_pclr/packet 解析）。
+  它不看版本、不看地址、不需要大文件。
+
+交付物也不止 RCE：一个跨版本稳定、无需 ASLR、上传即崩的解析器缺陷（CVE 层面）
+本身即有效成果；RCE 作为持续研究，不作为阻塞项。
+
+---
+
 ## 0. 这是什么（先说准确）
 
 **从ComfyUI 为入口，确认它依赖 Pillow，而 Pillow 又捆绑了有漏洞的 OpenJPEG**
