@@ -668,3 +668,62 @@ OOB 写:
 
 **判据修正**：以后判定“写到了某对象”必须用【B 段自身的事件序列】，
 不能用跨段同名地址。`tools/ts.py` 已加此限制说明。
+
+### 4.14 修正：§4.13 的“free chunk”结论不成立（附带真实写入轨迹）
+
+§4.13 用 `ts.py` 判定窗口对象 `FREED BEFORE`，但那里有一个逻辑错误：
+**`ts.py` 把 A 段的同名地址算进了 B 段**。同名地址不等于同一块内存。
+
+按 B 段（`decode #2` 之后）自身的事件序列重查：
+
+```
+seq  31 : [ALLOC calloc] n=1 s=24 -> 0xd1a7f0    ← tp_index 本体，B 段【新分配】
+seq  50 : [DBG read_sod] tpsno=0 tell=136
+seq  57 : [DBG OOB-WRITE-IMMINENT] tpsno=1 write_at=+32 val=0xd4 / +40 val=0x116
+seq 266 : tpsno=2 write_at=+56 val=0x122 / +64 val=0x162
+```
+
+⇒ `tp_index` 不是 A 的残留空闲块，而是 B 段自己的分配。
+§4.13 的“写的是 free chunk 的 fd/key”因此**不成立**。
+
+**另外三个实测事实**（`ap.log` B 段全段统计）：
+
+```
+tcache        出现 0 次
+malloc():     出现 0 次
+unsorted      出现 0 次
+⇒ glibc 从未把这些块当空闲链处理，空闲链污染的前置根本不存在
+```
+
+**真实写入轨迹**（`pp1` + A23 塑形）：
+
+```
+tp_index #0 = 0xd1a7f0  size=24   (calloc(1,24)，只有一个元素！)
+tp_index #1 = 0xd1a870  size=24
+OOB 写:
+  0xd1a818  val=0xd4      落在 tp_index#0 块内尾部
+  0xd1a830  val=0x122
+  0xd1a848  val=0x170
+  ...
+  0xd1a870 附近 val=0x20c   正好是 tp_index#1
+```
+
+⇒ 写入形状：**步长 24、值 = 严格递增的文件偏移，落点是 tp_index 之后的连续槽**。
+目标里装的是 `opj_tp_index_t`（start_pos/end_pos），写坏只会让索引错乱。
+
+**当前原语的准确定性**：
+
+| 维度 | 实测值 |
+|---|---|
+| 值 | 小整数（文件偏移，0xd4~0x344） |
+| 落点 | `tp_index + 24k`，k=1..76 |
+| 目标对象 | `tp_index` 自己的槽（溢出的就是它自己） |
+| 是否碰到空闲链 | 否（tcache/malloc()/unsorted 全 0） |
+| 是否需要地址 | 否（落点是相对偏移） |
+
+⇒ 它只适合写 **计数器/长度**，不适合写指针。
+要升级，必须先让「落点区域」从 `tp_index` 变成别的对象，而这就回到
+`nb_tps` / 分配顺序的控制问题上（§4.9~4.12 已测）。
+
+**判据修正**：以后判定“写到了某对象”必须用【B 段自身的事件序列】，
+不能用跨段同名地址。`tools/ts.py` 已加此限制说明。
