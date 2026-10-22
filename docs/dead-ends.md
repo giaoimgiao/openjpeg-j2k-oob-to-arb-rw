@@ -1039,3 +1039,42 @@ tp_index 数组本身无此字段；tiles->numcomps(+0x10) 是
 `data` / `data_win` / `resolutions` / `data_size*` 四个槽调到
 “全部不需要分配、也不需要 free”的状态（判据：不再出现 free 崩溃，
 且 `0xa20f70` 出现在日志/被改写）。
+
+### 4.20 【破墙】三条件首次同时成立：大文件 + 小 m_data + comps 指向我们的字节
+
+历史死结：
+
+```
+要表达 m_data 地址(0xe2xxxx) ⇒ 文件要 14MB
+但 14MB payload 会把 m_data 顶到 mmap(0x7xxx) ⇒ 地址不可表达
+```
+
+**破法：tile-part 可交错 + m_data 是 per-tile 的**：
+
+```
+布局:
+  tile0 part0            payload=112B(fake)   ⇒ tile0.m_data=112B，留 brk
+  tile0 part1..23        payload=0            ⇒ 不增长
+  tile1 part0            payload=14.8MB 填充   ⇒ 只撑大 tile1 自己的 m_data
+  tile0 part24           SOT 落在 0xe236d4    ⇒ tell-2 = 0xe236e0 = tile0.m_data
+```
+
+实测（`i2.log`，`tools/mk_inter.py`）：
+
+```
+① [ALLOC malloc] size=114 -> 0xe236e0        ← m_data，brk，仅112B
+   [DBG TCP] m_data=0xe236e0 m_data_size=112
+② [DBG OOB-WRITE-IMMINENT] tpsno=24 write_at=+584 val=0xe236e0
+   [DBG REL] tp=0xe61ef0 comps0=0xe236e0     ← tiles->comps 指向我们的字节
+③ 崩在 opj_tcd_init_decode_tile → opj_image_data_free(0x79f1c18d82a18d1)
+   ⇒ fake 里某个指针字段被当有效指针 free，尚未走到像素写
+```
+
+**意义**：`y1=16` 现在来自文件字节，不再是 `tell`，§4.18 的“高 32 位恒 0”被绕开。
+三个此前互斥的条件（大文件/小 m_data/可表达地址）第一次同时成立。
+
+**剩余一步**：让 `opj_tcd_init_decode_tile` 不再 free 垃圾指针。
+已知它在这一步对 `tilec` 的若干字段做 free/读，需要把 fake 里
+`data` / `data_win` / `resolutions` / `data_size*` 四个槽调到
+“全部不需要分配、也不需要 free”的状态（判据：不再出现 free 崩溃，
+且 `0xa20f70` 出现在日志/被改写）。
