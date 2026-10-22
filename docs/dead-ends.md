@@ -1305,3 +1305,43 @@ openjpeg 里凡是用 `include_size` / `numchunks` / `nb_tps` 这类字段做循
 把这类问题定成 DoS 级 CVE。
 ⇒ 后续筛选候选，除了①口径不同源 ②值来自文件字段 ③decoder 可达，还应加：
    ④【写入点没有 index < size 守卫】，否则最多 DoS。
+
+### 5.7 pi.c 的 include_size 回绕也不构成越界写（有守卫）
+
+上游 master 相对 2.5.4 在 `pi.c` 只补了一处乘法溢出检查：
+
+```
+2.5.4  pi.c:1697   l_current_pi->include_size = l_tcp->numlayers * l_step_l;   // 无检查（decoder）
+master            if (l_step_l <= UINT_MAX / l_tcp->numlayers) { ... }          // 新增
+（encoder 侧 pi.c:1477 本来就有同形检查）
+```
+
+但实测证明它**不能升级为堆越界写**：
+
+```
+pi.c:279 / 332 / 466 / 600 / 732   每一处 include 写入之前都有
+    if (index >= pi->include_size) { ... }
+⇒ include_size 回绕成小值 ⇒ 后续 packet 被守卫跳过（功能错误 / OOM），不越界
+⇒ 回绕成大值（接近 4G）⇒ calloc 失败 ⇒ 报错退出（DoS）
+```
+
+⇒ 该缺陷的真实等级是 **DoS / 功能错误**，不是内存破坏。
+master 那条检查属于加固，不是安全补丁式的内存破坏修复。
+
+**顺带钉死一条文件格式判据（以后构造 COD 必须遵守）**：
+
+```
+j2k.c:11131   /* Precinct exponent 0 is only allowed for lowest resolution level */
+              if ((i != 0) && (((l_tmp & 0xf) == 0) || ((l_tmp >> 4) == 0)))
+                  → "Invalid precinct size"
+⇒ 第 0 级可用 0x00，其余级必须 PPx>=1 且 PPy>=1（最小 0x11）
+```
+
+### 5.8 方法论：为什么“分配回绕”类候选在本目标上产率低
+
+openjpeg 里凡是用 `include_size` / `numchunks` / `nb_tps` 这类字段做循环上界的路径，
+大多同时在写入点前放了下界守卫（`if (index >= size)`）。
+所以“分配值回绕”通常只能得到 DoS，不能得到越界写 —— 这也解释了为什么 Ubuntu 只会
+把这类问题定成 DoS 级 CVE。
+⇒ 后续筛选候选，除了①口径不同源 ②值来自文件字段 ③decoder 可达，还应加：
+   ④【写入点没有 index < size 守卫】，否则最多 DoS。
