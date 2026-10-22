@@ -7,8 +7,7 @@ import glob
 #   建每函数体（行首 } 结束），扫描体内出现的其它函数名，BFS
 #   输出可达函数集合；再对 census 候选判宿主函数是否可达
 
-ENTRIES = ['opj_read_header', 'opj_read_tile_header', 'opj_decode_tile_data',
-           'opj_j2k_read_header', 'opj_j2k_read_tile_header', 'opj_j2k_decode_tile']
+ENTRIES = ['opj_j2k_read_header_procedure','opj_j2k_decode_tiles','opj_j2k_copy_default_tcp_and_create_tcd']
 FILES = sorted(glob.glob('*.c'))
 
 def defname(line):
@@ -22,7 +21,7 @@ for fn in FILES:
     L = open(fn, errors='replace').read().splitlines()
     i = 0
     while i < len(L):
-        name = defname(L[i])
+        name = defname(L[i]) or defname(L[i-1] + " " + L[i]) or defname(L[i-2] + " " + L[i-1] + " " + L[i])
         if name and '(' in L[i]:
             j = i
             while j < len(L) and not L[j].rstrip().endswith('{'):

@@ -1242,3 +1242,26 @@ opj_procedure_list_execute(list, ...)   →   (*proc)(...)
 候选可达  ⇔  存在一次【仅由文件内容驱动】的解码（正常文件即可）
               使得 trace 中出现该函数
 ```
+
+### 5.6 运行时 trace 与定点变异（两条都跑了）
+
+**A. procedure-list trace**：interpose `opj_procedure_list_add_procedure`，
+按模块内偏移打印注册进管线的函数，再用 nm 映射。真实解码管线：
+
+    opj_j2k_read_header_procedure
+    opj_j2k_copy_default_tcp_and_create_tcd
+    opj_j2k_decode_tiles
+    opj_j2k_build_decoder / opj_j2k_decoding_validation
+
+但只抓到 5 次注册，`read_sod` / `tcd_code_block_dec_allocate` 均未出现，
+说明 `dlsym(RTLD_NEXT)` 可能没解析到真实符号，或这些过程走的是直接调用。
+⇒ 该 trace 目前不做可达性结论，只作为“真实管线”的旁证。
+
+**B. 定点变异（guard，THRESH=8）**：
+
+    头部随机（SIZ/TLM/COD/QCD/COM 区，1~4 字节）   80 发 → 0 崩
+    COD/QCD 参数区（1~2 字节）                    150 发 → 0 崩
+
+⇒ 2.5.4 在参数校验上很密（cblkw+cblkh<=12、numres、precinct 等都有检查），
+随机变异这条路产出极低。要用变异必须带覆盖率反馈（本 proot 无 ASAN/clang，做不了），
+否则就是盲打。
