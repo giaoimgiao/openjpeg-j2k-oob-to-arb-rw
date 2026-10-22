@@ -30,6 +30,8 @@
 | 文件 → 解码进程崩溃 / 卡死 | ✅ | `poc/poc_dos.jp2` |
 | 受限越界写 → 类型混淆 → 任意读写 | ✅ 本地实证 | `repro/` |
 | 任意读写 → 本地 RCE（`uid=0`） | ✅ 本地实证 | `repro/repro.sh` |
+| 受限越界写 → 任意地址 free | ✅ 本地实证 | `docs/dead-ends.md` §1 |
+| `comps` 指向 payload 假结构 → 像素写 GOT | ❌ 源码级证伪 | `docs/dead-ends.md` §2.1 / §2.2 |
 | 上传 → 远程 RCE | ❌ 未解决 | `WRITEUP.md` §7 |
 | ASLR 绕过 | ❌ 未解决 | `WRITEUP.md` §7 |
 
@@ -55,7 +57,9 @@
 ├── README.md               本文件
 ├── docs/
 │   ├── timeline.md         研究时间线
-│   └── status.md           漏洞状态、影响描述与缓解
+│   ├── status.md           漏洞状态、影响描述与缓解
+│   ├── dead-ends.md        ★死路清单与源码级证伪（动手前必读）
+│   └── findings-raw.md     原始标定数据（含已作废结论，仅存档）
 ├── poc/
 │   ├── poc_dos.jp2         解码进程崩溃 PoC
 │   └── check_target.py     环境检测器（版本 + 可达性）
@@ -105,6 +109,7 @@ bash repro/repro.sh
 | 文件体积 | RCE 链需 ~11–13 MB（值即文件偏移→ 也就是说:目标服务器需要允许上传10M以上的图片，才可RCE|
 | 通用性 | 依赖 glibc 分配行为与进程堆历史，换环境需重调 |
 | 实际危害 | 解码进程崩溃 / 卡死；是否可用取决于部署侧的配额与进程隔离 |
+| 已证伪路线 | 像素写 GOT、`comps`→fake、tcache 投毒、UAF 别名 —— 见 [`docs/dead-ends.md`](docs/dead-ends.md) §3，勿重复投入 |
 
 ---
 
